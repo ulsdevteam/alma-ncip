@@ -1,6 +1,9 @@
 --About IDS_NCIP_Client 1.5
 --
 --Author:  Bill Jones III, SUNY Geneseo, IDS Project, jonesw@geneseo.edu
+--About IDS_NCIP_Client 1.5
+--
+--Author:  Bill Jones III, SUNY Geneseo, IDS Project, jonesw@geneseo.edu
 --Modified by: Tom McNulty, VCU Libraries, tmcnulty@vcu.edu
 --System Addon used for ILLiad to communicate with Alma through NCIP protocol
 --
@@ -279,7 +282,7 @@ local df = string.match(dr, "%d+\/%d+\/%d+");
 local mn, dy, yr = string.match(df, "(%d+)/(%d+)/(%d+)");
 local mnt = string.format("%02d",mn);
 local dya = string.format("%02d",dy);
-local user = GetFieldValue("Transaction", "Username");
+local user = GetFieldValue("Transaction", "SSN");
 if Settings.Use_Prefixes then
 	local t = GetFieldValue("Transaction", "TransactionNumber");
 	if GetFieldValue("Transaction", "LibraryUseOnly") and GetFieldValue("Transaction", "RenewalsAllowed") then
@@ -314,10 +317,7 @@ local title = GetFieldValue("Transaction", "LoanTitle");
 	end
 	
 local pickup_location_full = GetFieldValue("Transaction", "Location");
-local sublibraries = assert(io.open("C:\\Program Files (x86)\\ILLiad\\Addons\\Alma-NCIP\\sublibraries.txt", "r"));
-	if sublibraries == nil then
-		sublibraries = assert(io.open("C:\\Program Files\\ILLiad\\Addons\\Alma-NCIP\\sublibraries.txt", "r"));
-	end	
+local sublibraries = assert(io.open(AddonInfo.Directory .. "\\sublibraries.txt", "r"));
 local pickup_location = "";
 local templine = nil;
 	if sublibraries ~= nil then
