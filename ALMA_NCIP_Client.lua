@@ -1,10 +1,6 @@
---About IDS_NCIP_Client 1.5
---
---Author:  Bill Jones III, SUNY Geneseo, IDS Project, jonesw@geneseo.edu
---About IDS_NCIP_Client 1.5
---
 --Author:  Bill Jones III, SUNY Geneseo, IDS Project, jonesw@geneseo.edu
 --Modified by: Tom McNulty, VCU Libraries, tmcnulty@vcu.edu
+--Modified for ULS v1.0
 --System Addon used for ILLiad to communicate with Alma through NCIP protocol
 --
 --Description of Registered Event Handlers for ILLiad
@@ -282,7 +278,7 @@ local df = string.match(dr, "%d+\/%d+\/%d+");
 local mn, dy, yr = string.match(df, "(%d+)/(%d+)/(%d+)");
 local mnt = string.format("%02d",mn);
 local dya = string.format("%02d",dy);
-local user = GetFieldValue("Transaction", "SSN");
+local user = GetFieldValue("User", "SSN");
 if Settings.Use_Prefixes then
 	local t = GetFieldValue("Transaction", "TransactionNumber");
 	if GetFieldValue("Transaction", "LibraryUseOnly") and GetFieldValue("Transaction", "RenewalsAllowed") then
@@ -316,14 +312,18 @@ local title = GetFieldValue("Transaction", "LoanTitle");
 		title = string.gsub(title, "&", "and");
 	end
 	
-local pickup_location_full = GetFieldValue("Transaction", "Location");
+local pickup_location_full = GetFieldValue("Transaction", "NVTGC");
 local sublibraries = assert(io.open(AddonInfo.Directory .. "\\sublibraries.txt", "r"));
 local pickup_location = "";
+local comma_position = 1;
 local templine = nil;
 	if sublibraries ~= nil then
 		for line in sublibraries:lines() do
 			if string.find(line, pickup_location_full) ~= nil then
-				pickup_location = string.sub(line, line:len() - 2);
+--				pickup_location = string.sub(line, line:len() - 2);
+-- ULS does not use three-character designators for sublibraries, so all text after comma must be captured
+				comma_position = string.find(line,",");
+				pickup_location = string.sub(line,comma_position + 1);
 				break;
 				
 			else
@@ -360,7 +360,7 @@ local m = '';
 	m = m .. '<ItemIdentifierValue>' .. tn .. '</ItemIdentifierValue>'
 	m = m .. '</ItemId>'
 	m = m .. '<DateForReturn>' .. yr .. '-' .. mnt .. '-' .. dya .. 'T23:59:00' .. '</DateForReturn>'
---  m = m .. '<PickupLocation>' .. pickup_location .. '</PickupLocation>'
+  m = m .. '<PickupLocation>' .. pickup_location .. '</PickupLocation>'
 	m = m .. '<ItemOptionalFields>'
 	m = m .. '<BibliographicDescription>'
 	m = m .. '<Author>' .. author .. '</Author>'
@@ -375,7 +375,7 @@ local m = '';
 --ReturnedItem XML Builder for Borrowing (Patron Returns)
 function buildCheckInItemBorrowing()
 local tn = "";
-local user = GetFieldValue("Transaction", "Username");
+local user = GetFieldValue("User", "SSN");
 if Settings.Use_Prefixes then
 	local t = GetFieldValue("Transaction", "TransactionNumber");
 	if GetFieldValue("Transaction", "LibraryUseOnly") and GetFieldValue("Transaction", "RenewalsAllowed") then
@@ -427,12 +427,12 @@ end
 function buildCheckInItemLending()
 local ttype = "";
 local user = GetFieldValue("Transaction", "Username");
-local refnumber = GetFieldValue("Transaction", "ReferenceNumber");
+local itemnumber = GetFieldValue("Transaction", "ItemNumber");
 local trantype = GetFieldValue("Transaction", "ProcessType");
 	if trantype == "Borrowing" then
 		ttype = Settings.checkInItem_Transaction_Prefix .. GetFieldValue("Transaction", "TransactionNumber");		
 	elseif trantype == "Lending" then
-		ttype = GetFieldValue("Transaction", "ReferenceNumber");
+		ttype = GetFieldValue("Transaction", "ItemNumber");
 	else
 		ttype = Settings.checkInItem_Transaction_Prefix .. GetFieldValue("Transaction", "TransactionNumber");
 	end
@@ -455,7 +455,7 @@ local cil = '';
 	cil = cil .. '</UserId>'
 	cil = cil .. '<ItemId>'
 	cil = cil .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
-	cil = cil .. '<ItemIdentifierValue>' .. refnumber .. '</ItemIdentifierValue>'
+	cil = cil .. '<ItemIdentifierValue>' .. itemnumber .. '</ItemIdentifierValue>'
 	cil = cil .. '</ItemId>'
 	cil = cil .. '<RequestId>'
 	cil = cil .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
@@ -474,7 +474,7 @@ local mn, dy, yr = string.match(df, "(%d+)/(%d+)/(%d+)");
 local mnt = string.format("%02d",mn);
 local dya = string.format("%02d",dy);
 local pseudopatron = 'pseudopatron';
-local refnumber = GetFieldValue("Transaction", "ReferenceNumber");
+local itemnumber = GetFieldValue("Transaction", "ItemNumber");
 local tn = Settings.checkOutItem_RequestIdentifierValue_Prefix .. GetFieldValue("Transaction", "TransactionNumber");
 local coi = '';
     coi = coi .. '<?xml version="1.0" encoding="ISO-8859-1"?>'
@@ -494,7 +494,7 @@ local coi = '';
 	coi = coi .. '</UserId>'
 	coi = coi .. '<ItemId>'
 	coi = coi .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
-	coi = coi .. '<ItemIdentifierValue>' .. refnumber .. '</ItemIdentifierValue>'
+	coi = coi .. '<ItemIdentifierValue>' .. itemnumber .. '</ItemIdentifierValue>'
 	coi = coi .. '</ItemId>'
 	coi = coi .. '<RequestId>'
 	coi = coi .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
