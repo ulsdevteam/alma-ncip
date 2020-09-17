@@ -1,6 +1,8 @@
+--About ALMA_NCIP_Client 3.0
+--
 --Author:  Bill Jones III, SUNY Geneseo, IDS Project, jonesw@geneseo.edu
 --Modified by: Tom McNulty, VCU Libraries, tmcnulty@vcu.edu
---Modified for ULS v1.0
+--Modified for ULS by: Jason Thorhauer, jat188@.edu
 --System Addon used for ILLiad to communicate with Alma through NCIP protocol
 --
 --Description of Registered Event Handlers for ILLiad
@@ -25,9 +27,15 @@
 
 
 local Settings = {};
+DebugMode = GetSetting("DebugMode");
 
 --NCIP Responder URL
-Settings.NCIP_Responder_URL = GetSetting("NCIP_Responder_URL");
+if (DebugMode)
+	Settings.NCIP_Responder_URL = GetSetting("Sandbox_NCIP_Responder_URL");
+else
+	Settings.NCIP_Responder_URL = GetSetting("Production_NCIP_Responder_URL");
+end
+
 
 --Change Prefix Settings for Transactions
 Settings.Use_Prefixes = GetSetting("Use_Prefixes");
@@ -66,107 +74,114 @@ function BorrowingAcceptItem(transactionProcessedEventArgs)
 	
 	if GetFieldValue("Transaction", "RequestType") == "Loan" then
 	
-	LogDebug("Item Request has been identified as a Loan and not Article - process started.");
-	
-	luanet.load_assembly("System");
-	local ncipAddress = Settings.NCIP_Responder_URL;
-	local BAImessage = buildAcceptItem();
-	LogDebug("creating BorrowingAcceptItem message[" .. BAImessage .. "]");
-	local WebClient = luanet.import_type("System.Net.WebClient");
-	local myWebClient = WebClient();
-	LogDebug("WebClient Created");
-	LogDebug("Adding Header");
+		local pieces = CountPieces();
+		LogDebug("Item Request has been identified as a Loan and not Article - process started with " .. pieces .. " pieces.");
+		
+		for i=0,pieces do
+			luanet.load_assembly("System");
+			local ncipAddress = Settings.NCIP_Responder_URL;
+			local BAImessage = buildAcceptItem(i+1,pieces);
+			LogDebug("creating BorrowingAcceptItem message[" .. BAImessage .. "]");
+			local WebClient = luanet.import_type("System.Net.WebClient");
+			local myWebClient = WebClient();
+			LogDebug("WebClient Created");
+			LogDebug("Adding Header");
 
-	LogDebug("Setting Upload String");
-	local BAIresponseArray = myWebClient:UploadString(ncipAddress, BAImessage);
-	LogDebug("Upload response was[" .. BAIresponseArray .. "]");
-	
-	LogDebug("Starting error catch")
-	local currentTN = GetFieldValue("Transaction", "TransactionNumber");
-	
-	if string.find (BAIresponseArray, "Item Not Checked Out") then
-	LogDebug("NCIP Error: Item Not Checked Out");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-NotCheckedOut"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
-    SaveDataSource("Transaction");
-	
-	elseif string.find(BAIresponseArray, "User Authentication Failed") then
-	LogDebug("NCIP Error: User Authentication Failed");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-UserAuthFail"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
-    SaveDataSource("Transaction");
-	
-	--this error came up from non-standard characters in the title (umlauts)
-	elseif string.find(BAIresponseArray, "Service is not known") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-SrvcNotKnown"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
-    SaveDataSource("Transaction");	
+			LogDebug("Setting Upload String");
+			local BAIresponseArray = myWebClient:UploadString(ncipAddress, BAImessage);
+			LogDebug("Upload response was[" .. BAIresponseArray .. "]");
+			
+			LogDebug("Starting error catch")
+			local currentTN = GetFieldValue("Transaction", "TransactionNumber");
+			
+			if string.find (BAIresponseArray, "Item Not Checked Out") then
+			LogDebug("NCIP Error: Item Not Checked Out");
+			ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-NotCheckedOut"});
+			LogDebug("Adding Note to Transaction with NCIP Client Error");
+			ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
+			SaveDataSource("Transaction");
+			
+			elseif string.find(BAIresponseArray, "User Authentication Failed") then
+			LogDebug("NCIP Error: User Authentication Failed");
+			ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-UserAuthFail"});
+			LogDebug("Adding Note to Transaction with NCIP Client Error");
+			ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
+			SaveDataSource("Transaction");
+			
+			--this error came up from non-standard characters in the title (umlauts)
+			elseif string.find(BAIresponseArray, "Service is not known") then
+			LogDebug("NCIP Error: ReRouting Transaction");
+			ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-SrvcNotKnown"});
+			LogDebug("Adding Note to Transaction with NCIP Client Error");
+			ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
+			SaveDataSource("Transaction");	
 
-	elseif string.find(BAIresponseArray, "Problem") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, Settings.BorrowingAcceptItemFailQueue});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
-    SaveDataSource("Transaction");
-	
-	else
-	LogDebug("No Problems found in NCIP Response.")
-	ExecuteCommand("AddNote", {currentTN, "NCIP Response for BorrowingAcceptItem received successfully"});
-    SaveDataSource("Transaction");
-	end
+			elseif string.find(BAIresponseArray, "Problem") then
+			LogDebug("NCIP Error: ReRouting Transaction");
+			ExecuteCommand("Route", {currentTN, Settings.BorrowingAcceptItemFailQueue});
+			LogDebug("Adding Note to Transaction with NCIP Client Error");
+			ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
+			SaveDataSource("Transaction");
+			
+			else
+			LogDebug("No Problems found in NCIP Response.")
+			ExecuteCommand("AddNote", {currentTN, "NCIP Response for BorrowingAcceptItem received successfully"});
+			SaveDataSource("Transaction");
+			end
+			
+		end --end of pieces loop
 	end
 end
 
 
 function BorrowingCheckInItem(transactionProcessedEventArgs)
-
-	LogDebug("BorrowingCheckInItem - start");
-	luanet.load_assembly("System");
-	local ncipAddress = Settings.NCIP_Responder_URL;
-	local BCIImessage = buildCheckInItemBorrowing();
-	LogDebug("creating BorrowingCheckInItem message[" .. BCIImessage .. "]");
-	local WebClient = luanet.import_type("System.Net.WebClient");
-	local myWebClient = WebClient();
-	LogDebug("WebClient Created");
-	LogDebug("Adding Header");
-	myWebClient.Headers:Add("Content-Type", "text/xml; charset=UTF-8");
-	LogDebug("Setting Upload String");
-	local BCIIresponseArray = myWebClient:UploadString(ncipAddress, BCIImessage);
-	LogDebug("Upload response was[" .. BCIIresponseArray .. "]");
+	local pieces = CountPieces();
+	LogDebug("BorrowingCheckInItem - start for " .. pieces .. " pieces.");
 	
-	LogDebug("Starting error catch")
-	local currentTN = GetFieldValue("Transaction", "TransactionNumber");
-	
-	if string.find(BCIIresponseArray, "Unknown Item") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: BorCheckIn-UnknownItem"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
-    SaveDataSource("Transaction");
-	
-	elseif string.find(BCIIresponseArray, "Item Not Checked Out") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: BorCheckIn-NotCheckedOut"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
-    SaveDataSource("Transaction");
-	
-	elseif string.find(BCIIresponseArray, "Problem") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, Settings.BorrowingCheckInItemFailQueue});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
-    SaveDataSource("Transaction");
-	
-	else
-	LogDebug("No Problems found in NCIP Response.")
-	ExecuteCommand("AddNote", {currentTN, "NCIP Response for BorrowingCheckInItem received successfully"});
-    SaveDataSource("Transaction");
-	end
+	for i=0,pieces do
+		luanet.load_assembly("System");
+		local ncipAddress = Settings.NCIP_Responder_URL;
+		local BCIImessage = buildCheckInItemBorrowing(i+1,pieces);
+		LogDebug("creating BorrowingCheckInItem message[" .. BCIImessage .. "]");
+		local WebClient = luanet.import_type("System.Net.WebClient");
+		local myWebClient = WebClient();
+		LogDebug("WebClient Created");
+		LogDebug("Adding Header");
+		myWebClient.Headers:Add("Content-Type", "text/xml; charset=UTF-8");
+		LogDebug("Setting Upload String");
+		local BCIIresponseArray = myWebClient:UploadString(ncipAddress, BCIImessage);
+		LogDebug("Upload response was[" .. BCIIresponseArray .. "]");
+		
+		LogDebug("Starting error catch")
+		local currentTN = GetFieldValue("Transaction", "TransactionNumber");
+		
+		if string.find(BCIIresponseArray, "Unknown Item") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, "NCIP Error: BorCheckIn-UnknownItem"});
+		LogDebug("Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
+		SaveDataSource("Transaction");
+		
+		elseif string.find(BCIIresponseArray, "Item Not Checked Out") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, "NCIP Error: BorCheckIn-NotCheckedOut"});
+		LogDebug("Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
+		SaveDataSource("Transaction");
+		
+		elseif string.find(BCIIresponseArray, "Problem") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, Settings.BorrowingCheckInItemFailQueue});
+		LogDebug("Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
+		SaveDataSource("Transaction");
+		
+		else
+		LogDebug("No Problems found in NCIP Response.")
+		ExecuteCommand("AddNote", {currentTN, "NCIP Response for BorrowingCheckInItem received successfully"});
+		SaveDataSource("Transaction");
+		end
+	end -- end of pieces loop
 end
 
 --Lending Functions
@@ -271,7 +286,7 @@ end
 
 --AcceptItem XML Builder for Borrowing
 --sometimes Author fields and Title fields are blank
-function buildAcceptItem()
+function buildAcceptItem(currentpiece,totalpieces)
 local tn = "";
 local dr = tostring(GetFieldValue("Transaction", "DueDate"));
 local df = string.match(dr, "%d+\/%d+\/%d+");
@@ -320,8 +335,6 @@ local templine = nil;
 	if sublibraries ~= nil then
 		for line in sublibraries:lines() do
 			if string.find(line, pickup_location_full) ~= nil then
---				pickup_location = string.sub(line, line:len() - 2);
--- ULS does not use three-character designators for sublibraries, so all text after comma must be captured
 				comma_position = string.find(line,",");
 				pickup_location = string.sub(line,comma_position + 1);
 				break;
@@ -357,7 +370,7 @@ local m = '';
 	m = m .. '<UserIdentifierValue>' .. user .. '</UserIdentifierValue>'
 	m = m .. '</UserId>'
 	m = m .. '<ItemId>'
-	m = m .. '<ItemIdentifierValue>' .. tn .. '</ItemIdentifierValue>'
+	m = m .. '<ItemIdentifierValue>' .. tn .. '_' .. currentpiece .. 'of' .. totalpieces .. '</ItemIdentifierValue>'
 	m = m .. '</ItemId>'
 	m = m .. '<DateForReturn>' .. yr .. '-' .. mnt .. '-' .. dya .. 'T23:59:00' .. '</DateForReturn>'
   m = m .. '<PickupLocation>' .. pickup_location .. '</PickupLocation>'
@@ -373,9 +386,10 @@ local m = '';
  end
 
 --ReturnedItem XML Builder for Borrowing (Patron Returns)
-function buildCheckInItemBorrowing()
+function buildCheckInItemBorrowing(currentpiece,totalpieces)
 local tn = "";
 local user = GetFieldValue("User", "SSN");
+
 if Settings.Use_Prefixes then
 	local t = GetFieldValue("Transaction", "TransactionNumber");
 	if GetFieldValue("Transaction", "LibraryUseOnly") and GetFieldValue("Transaction", "RenewalsAllowed") then
@@ -412,7 +426,7 @@ local cib = '';
 	cib = cib .. '</UserId>'
 	cib = cib .. '<ItemId>'
 	cib = cib .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
-	cib = cib .. '<ItemIdentifierValue>' .. tn .. '</ItemIdentifierValue>'
+	cib = cib .. '<ItemIdentifierValue>' .. tn .. '_' .. currentpiece .. 'of' .. totalpieces .. '</ItemIdentifierValue>'
 	cib = cib .. '</ItemId>'
 	cib = cib .. '<RequestId>'
 	cib = cib .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
@@ -505,4 +519,13 @@ local coi = '';
 	coi = coi .. '</NCIPMessage>'
 	return coi;
 	
+end
+
+--A simple function to get the number of pieces in a borrowing request for iterative AcceptItem and CheckIn
+function CountPieces()
+local pieces = GetFieldValue("Transaction","Pieces");
+if ((pieces == '' ) or (pieces == nil)) then
+	pieces = 1;
+	end
+return pieces;
 end
