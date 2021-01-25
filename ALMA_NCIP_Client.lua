@@ -1,8 +1,14 @@
---About ALMA_NCIP_Client 3.0
+--About ALMA_NCIP_Client 5.0
 --
---Author:  Bill Jones III, SUNY Geneseo, IDS Project, jonesw@geneseo.edu
---Modified by: Tom McNulty, VCU Libraries, tmcnulty@vcu.edu
+--To be used with ULS-updated PrimoVE.lua addon, with delimited Alma barcodes and request IDs stored in ItemInfo1 and ItemInfo2 fields.
+--Lending CheckOut (triggered by In Stacks Searching 'Mark Found' cancels pending Patron Physical Item Requests via API and checks out the item via NCIP.
+--Lending CheckIn (triggered by Lending Returns processing 'Process Queue' performs NCIP checkin and barcode scan-in via API to correctly reflect the item's location at the Resource Sharing library.
+--
 --Modified for ULS by: Jason Thorhauer, jat188@.edu
+--Modified by: Tom McNulty, VCU Libraries, tmcnulty@vcu.edu
+--Original Author:  Bill Jones III, SUNY Geneseo, IDS Project, jonesw@geneseo.edu
+
+
 --System Addon used for ILLiad to communicate with Alma through NCIP protocol
 --
 --Description of Registered Event Handlers for ILLiad
@@ -18,24 +24,37 @@
 --LendingRequestCheckOut
 --This will trigger whenever a transaction is processed from the Lending Update Stacks Searching form 
 --using the Mark Found or Mark Found Scan Now buttons. This will also work on the Lending Processing ribbon
---of the Request form for the Mark Found and Mark Found Scan Now buttons.
+--of the Request form for the Mark Found and Mark Found Scan Now buttons. Cancels pending Alma Patron Physical Item Request and checks out item
 --
 --LendingRequestCheckIn
 --This will trigger whenever a transaction is processed from the Lending Returns batch processing form.
+--Checks in item via NCIP and performs wand-in at Resource Sharing location
 --
 --Queue names have a limit of 40 characters (including spaces).
+
+
 
 
 local Settings = {};
 DebugMode = GetSetting("DebugMode");
 
 --NCIP Responder URL
-if (DebugMode)
+if (DebugMode==true) then
+	LogDebug("Alma NCIP: Debug mode is on - NCIP and API requests will act on the sandbox");
 	Settings.NCIP_Responder_URL = GetSetting("Sandbox_NCIP_Responder_URL");
+	Settings.APIKey = GetSetting("SandboxAPIKey");
 else
+	LogDebug("Alma NCIP: Debug mode is off - NCIP and API requests will act on production");
 	Settings.NCIP_Responder_URL = GetSetting("Production_NCIP_Responder_URL");
+	Settings.APIKey = GetSetting("ProductionAPIKey");
 end
 
+-- Add trailing slash to APIEndpoint if not present
+Settings.APIEndpoint = GetSetting("APIEndpoint");
+lastChar = string.sub(Settings.APIEndpoint, -1);
+if (lastChar ~= "/") then 
+	Settings.APIEndpoint = Settings.APIEndpoint .. "/"; 
+end 
 
 --Change Prefix Settings for Transactions
 Settings.Use_Prefixes = GetSetting("Use_Prefixes");
@@ -54,12 +73,17 @@ Settings.acceptItem_from_uniqueAgency_value = GetSetting("acceptItem_from_unique
 Settings.acceptItem_Transaction_Prefix = GetSetting("checkInItem_Transaction_Prefix");
 
 --checkInItem settings
+Settings.ResourceSharingLibraryCode = GetSetting("ResourceSharingLibraryCode");
+Settings.ResourceSharingCirculationDeskCode = GetSetting("ResourceSharingCirculationDeskCode");
 Settings.checkInItem_EnablePatronBorrowingReturns = GetSetting("EnablePatronBorrowingReturns");
 Settings.ApplicationProfileType = GetSetting("ApplicationProfileType");
 Settings.checkInItem_Transaction_Prefix = GetSetting("checkInItem_Transaction_Prefix");
 
+
 --checkOutItem settings
+Settings.PseudopatronID = GetSetting("PseudopatronID");
 Settings.checkOutItem_RequestIdentifierValue_Prefix = GetSetting("checkOutItem_RequestIdentifierValue_Prefix");
+Settings.ILLiad_NCIP_Agency_value = GetSetting("ILLiad_NCIP_Agency_value");
 
 function Init()
 	RegisterSystemEventHandler("BorrowingRequestCheckedInFromLibrary", "BorrowingAcceptItem");
@@ -75,21 +99,21 @@ function BorrowingAcceptItem(transactionProcessedEventArgs)
 	if GetFieldValue("Transaction", "RequestType") == "Loan" then
 	
 		local pieces = CountPieces();
-		LogDebug("Item Request has been identified as a Loan and not Article - process started with " .. pieces .. " pieces.");
+		LogDebug("Alma NCIP:Item Request has been identified as a Loan and not Article - process started with " .. pieces .. " pieces.");
 		
 		for i=0,pieces do
 			luanet.load_assembly("System");
 			local ncipAddress = Settings.NCIP_Responder_URL;
 			local BAImessage = buildAcceptItem(i+1,pieces);
-			LogDebug("creating BorrowingAcceptItem message[" .. BAImessage .. "]");
+			LogDebug("Alma NCIP:creating BorrowingAcceptItem message[" .. BAImessage .. "]");
 			local WebClient = luanet.import_type("System.Net.WebClient");
 			local myWebClient = WebClient();
-			LogDebug("WebClient Created");
-			LogDebug("Adding Header");
+			LogDebug("Alma NCIP:WebClient Created");
+			LogDebug("Alma NCIP:Adding Header");
 
 			LogDebug("Setting Upload String");
 			local BAIresponseArray = myWebClient:UploadString(ncipAddress, BAImessage);
-			LogDebug("Upload response was[" .. BAIresponseArray .. "]");
+			LogDebug("Alma NCIP:Upload response was[" .. BAIresponseArray .. "]");
 			
 			LogDebug("Starting error catch")
 			local currentTN = GetFieldValue("Transaction", "TransactionNumber");
@@ -97,14 +121,14 @@ function BorrowingAcceptItem(transactionProcessedEventArgs)
 			if string.find (BAIresponseArray, "Item Not Checked Out") then
 			LogDebug("NCIP Error: Item Not Checked Out");
 			ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-NotCheckedOut"});
-			LogDebug("Adding Note to Transaction with NCIP Client Error");
+			LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
 			ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
 			SaveDataSource("Transaction");
 			
 			elseif string.find(BAIresponseArray, "User Authentication Failed") then
 			LogDebug("NCIP Error: User Authentication Failed");
 			ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-UserAuthFail"});
-			LogDebug("Adding Note to Transaction with NCIP Client Error");
+			LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
 			ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
 			SaveDataSource("Transaction");
 			
@@ -112,7 +136,7 @@ function BorrowingAcceptItem(transactionProcessedEventArgs)
 			elseif string.find(BAIresponseArray, "Service is not known") then
 			LogDebug("NCIP Error: ReRouting Transaction");
 			ExecuteCommand("Route", {currentTN, "NCIP Error: BorAcceptItem-SrvcNotKnown"});
-			LogDebug("Adding Note to Transaction with NCIP Client Error");
+			LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
 			ExecuteCommand("AddNote", {currentTN, BAIresponseArray});
 			SaveDataSource("Transaction");	
 
@@ -124,7 +148,7 @@ function BorrowingAcceptItem(transactionProcessedEventArgs)
 			SaveDataSource("Transaction");
 			
 			else
-			LogDebug("No Problems found in NCIP Response.")
+			LogDebug("Alma NCIP:No Problems found in NCIP Response.")
 			ExecuteCommand("AddNote", {currentTN, "NCIP Response for BorrowingAcceptItem received successfully"});
 			SaveDataSource("Transaction");
 			end
@@ -136,19 +160,19 @@ end
 
 function BorrowingCheckInItem(transactionProcessedEventArgs)
 	local pieces = CountPieces();
-	LogDebug("BorrowingCheckInItem - start for " .. pieces .. " pieces.");
+	LogDebug("Alma NCIP:BorrowingCheckInItem - start for " .. pieces .. " pieces.");
 	
 	for i=0,pieces do
 		luanet.load_assembly("System");
 		local ncipAddress = Settings.NCIP_Responder_URL;
 		local BCIImessage = buildCheckInItemBorrowing(i+1,pieces);
-		LogDebug("creating BorrowingCheckInItem message[" .. BCIImessage .. "]");
+		LogDebug("Alma NCIP:creating BorrowingCheckInItem message[" .. BCIImessage .. "]");
 		local WebClient = luanet.import_type("System.Net.WebClient");
 		local myWebClient = WebClient();
-		LogDebug("WebClient Created");
-		LogDebug("Adding Header");
+		LogDebug("Alma NCIP:WebClient Created");
+		LogDebug("Alma NCIP:Adding Header");
 		myWebClient.Headers:Add("Content-Type", "text/xml; charset=UTF-8");
-		LogDebug("Setting Upload String");
+		LogDebug("Alma NCIP:Setting Upload String");
 		local BCIIresponseArray = myWebClient:UploadString(ncipAddress, BCIImessage);
 		LogDebug("Upload response was[" .. BCIIresponseArray .. "]");
 		
@@ -158,21 +182,21 @@ function BorrowingCheckInItem(transactionProcessedEventArgs)
 		if string.find(BCIIresponseArray, "Unknown Item") then
 		LogDebug("NCIP Error: ReRouting Transaction");
 		ExecuteCommand("Route", {currentTN, "NCIP Error: BorCheckIn-UnknownItem"});
-		LogDebug("Adding Note to Transaction with NCIP Client Error");
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
 		ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
 		SaveDataSource("Transaction");
 		
 		elseif string.find(BCIIresponseArray, "Item Not Checked Out") then
 		LogDebug("NCIP Error: ReRouting Transaction");
 		ExecuteCommand("Route", {currentTN, "NCIP Error: BorCheckIn-NotCheckedOut"});
-		LogDebug("Adding Note to Transaction with NCIP Client Error");
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
 		ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
 		SaveDataSource("Transaction");
 		
 		elseif string.find(BCIIresponseArray, "Problem") then
 		LogDebug("NCIP Error: ReRouting Transaction");
 		ExecuteCommand("Route", {currentTN, Settings.BorrowingCheckInItemFailQueue});
-		LogDebug("Adding Note to Transaction with NCIP Client Error");
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
 		ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
 		SaveDataSource("Transaction");
 		
@@ -185,108 +209,237 @@ function BorrowingCheckInItem(transactionProcessedEventArgs)
 end
 
 --Lending Functions
+
+function CancelPendingRequests(request)
+-- cancels Patron Physical Item Request via API before attempting checkOutItem
+
+local requestID = request;
+local tn = GetFieldValue("Transaction", "TransactionNumber");
+local APIAddress = Settings.APIEndpoint .. 'users/' .. Settings.PseudopatronID .. '/requests/' .. requestID .. '?apikey=' .. Settings.APIKey
+
+LogDebug('AlmaNCIP:Attempting to use API Endpoint '.. APIAddress);
+luanet.load_assembly("System");
+local WebClient = luanet.import_type("System.Net.WebClient");
+local APICancelWebClient = WebClient();
+LogDebug("Alma NCIP:WebClient Created");
+LogDebug("Alma NCIP:Adding Header");
+		
+APICancelWebClient.Headers:Add("Content-Type", "application/xml;charset=UTF-8");
+local APICancelresponseArray = APICancelWebClient:UploadString(APIAddress, "DELETE", "");
+LogDebug("AlmaNCIP: API Request Cancel response was[" .. APICancelresponseArray .. "]");
+ExecuteCommand("AddNote", {tn, 'Patron Physical Item Request ' .. requestID .. ' cancelled via API', 'System'});
+Sleep(3);
+end
+
 function LendingCheckOutItem(transactionProcessedEventArgs)
 	LogDebug("DEBUG -- LendingCheckOutItem - start");
 	luanet.load_assembly("System");
-	local ncipAddress = Settings.NCIP_Responder_URL;
-	local LCOImessage = buildCheckOutItem();
-	LogDebug("creating LendingCheckOutItem message[" .. LCOImessage .. "]");
-	local WebClient = luanet.import_type("System.Net.WebClient");
-	local myWebClient = WebClient();
-	LogDebug("WebClient Created");
-	LogDebug("Adding Header");
-	myWebClient.Headers:Add("Content-Type", "text/xml; charset=UTF-8");
-	LogDebug("Setting Upload String");
-	local LCOIresponseArray = myWebClient:UploadString(ncipAddress, LCOImessage);
-	LogDebug("Upload response was[" .. LCOIresponseArray .. "]");
+	local i=0;
+	local requests = {};
+	local barcodes = {};
 	
-	LogDebug("Starting error catch")
-	local currentTN = GetFieldValue("Transaction", "TransactionNumber");
+	local requestdatafield = GetFieldValue("Transaction","ItemInfo2");
+	local barcodedatafield = GetFieldValue("Transaction","ItemInfo1");
 	
-	if string.find(LCOIresponseArray, "Apply to circulation desk - Loan cannot be renewed (no change in due date)") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckOut-No Change Due Date"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, LCOIresponseArray});
-    SaveDataSource("Transaction");
+	local requests = Parse(requestdatafield,'/');
+	local barcodes = Parse(barcodedatafield,'/');
 	
-	elseif string.find(LCOIresponseArray, "User Ineligible To Check Out This Item") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckOut-User Ineligible"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, LCOIresponseArray});
-    SaveDataSource("Transaction");
 	
-	elseif string.find(LCOIresponseArray, "User Unknown") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckOut-User Unknown"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, LCOIresponseArray});
-    SaveDataSource("Transaction");
-	
-	elseif string.find(LCOIresponseArray, "Problem") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, Settings.LendingCheckOutItemFailQueue});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, LCOIresponseArray});
-    SaveDataSource("Transaction");
-	
-	else
-	LogDebug("No Problems found in NCIP Response.")
-	ExecuteCommand("AddNote", {currentTN, "NCIP Response for LendingCheckOutItem received successfully"});
-    SaveDataSource("Transaction");
-	end
+	for i = 0,(#barcodes)-1  do
+		
+		-- cancel Patron Physical Item Request via API before attempting checkOutItem
+		-- items requested without this plugin may not have pending requests
+		if (#requests ~= #barcodes) then
+			LogDebug("# requests does not match # barcodes.");
+		else
+			CancelPendingRequests((requests[i+1]));
+		end
+		
+		
+		local ncipAddress = Settings.NCIP_Responder_URL;
+		local LCOImessage = buildCheckOutItem((barcodes[i+1]));
+		LogDebug("creating LendingCheckOutItem message[" .. LCOImessage .. "]");
+		local WebClient = luanet.import_type("System.Net.WebClient");
+		local myWebClient = WebClient();
+		LogDebug("Alma NCIP:WebClient Created");
+		LogDebug("Alma NCIP:Adding Header");
+		myWebClient.Headers:Add("Content-Type", "text/xml; charset=UTF-8");
+		LogDebug("Alma NCIP:Setting Upload String");
+		local LCOIresponseArray = myWebClient:UploadString(ncipAddress, LCOImessage);
+		LogDebug("Upload response was[" .. LCOIresponseArray .. "]");
+		
+		LogDebug("Starting error catch")
+		local currentTN = GetFieldValue("Transaction", "TransactionNumber");
+		
+		if string.find(LCOIresponseArray, "Apply to circulation desk - Loan cannot be renewed (no change in due date)") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckOut-No Change Due Date"});
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, LCOIresponseArray});
+		SaveDataSource("Transaction");
+		
+		elseif string.find(LCOIresponseArray, "User Ineligible To Check Out This Item") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckOut-User Ineligible"});
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, LCOIresponseArray});
+		SaveDataSource("Transaction");
+		
+		elseif string.find(LCOIresponseArray, "User Unknown") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckOut-User Unknown"});
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, LCOIresponseArray});
+		SaveDataSource("Transaction");
+		
+		elseif string.find(LCOIresponseArray, "Problem") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, Settings.LendingCheckOutItemFailQueue});
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, LCOIresponseArray});
+		SaveDataSource("Transaction");
+		
+		else
+		LogDebug("Alma NCIP:No Problems found in NCIP Response.")
+		ExecuteCommand("AddNote", {currentTN, "NCIP Response for LendingCheckOutItem received successfully"});
+		SaveDataSource("Transaction");
+		end
+		
+		--Alma NCIP frequently times out, especially in the Sandbox.  Care must be taken to avoid sending requests too quickly.
+		Sleep(3);
+	end --end of barcodes iteration
 end
+
+
 
 function LendingCheckInItem(transactionProcessedEventArgs)
-	LogDebug("LendingCheckInItem - start");
-	luanet.load_assembly("System");
-	local ncipAddress = Settings.NCIP_Responder_URL;
-	local LCIImessage = buildCheckInItemLending();
-	LogDebug("creating LendingCheckInItem message[" .. LCIImessage .. "]");
-	local WebClient = luanet.import_type("System.Net.WebClient");
-	local myWebClient = WebClient();
-	LogDebug("WebClient Created");
-	LogDebug("Adding Header");
-	myWebClient.Headers:Add("Content-Type", "text/xml; charset=UTF-8");
-	LogDebug("Setting Upload String");
-	local LCIIresponseArray = myWebClient:UploadString(ncipAddress, LCIImessage);
-	LogDebug("Upload response was[" .. LCIIresponseArray .. "]");
+	local i=0;
+	local requests = {};
+	local barcodes = {};
+	
+	local barcodedatafield = GetFieldValue("Transaction","ItemInfo1");
+	local barcodes = Parse(barcodedatafield,'/');
 
-	LogDebug("Starting error catch")
-	local currentTN = GetFieldValue("Transaction", "TransactionNumber");
+	for i=0,(#barcodes)-1 do
 	
-	if string.find(LCIIresponseArray, "Unknown Item") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckIn-Unknown Item"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, LCIIresponseArray});
-    SaveDataSource("Transaction");
-	
-	elseif string.find(LCIIresponseArray, "Item Not Checked Out") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckIn-Not Checked Out"});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, LCIIresponseArray});
-    SaveDataSource("Transaction");	
-	
-	elseif string.find(LCIIresponseArray, "Problem") then
-	LogDebug("NCIP Error: ReRouting Transaction");
-	ExecuteCommand("Route", {currentTN, Settings.LendingCheckInItemFailQueue});
-	LogDebug("Adding Note to Transaction with NCIP Client Error");
-	ExecuteCommand("AddNote", {currentTN, LCIIresponseArray});
-    SaveDataSource("Transaction");
-	
-	else
-	LogDebug("No Problems found in NCIP Response.")
-	ExecuteCommand("AddNote", {currentTN, "NCIP Response for LendingCheckInItem received successfully"});
-    SaveDataSource("Transaction");
-	end
+		LogDebug("Alma NCIP:LendingCheckInItem - start");
+		luanet.load_assembly("System");
+		local ncipAddress = Settings.NCIP_Responder_URL;
+		local LCIImessage = buildCheckInItemLending((barcodes[i+1]));
+		LogDebug("Alma NCIP:creating LendingCheckInItem message[" .. LCIImessage .. "]");
+		local WebClient = luanet.import_type("System.Net.WebClient");
+		local myWebClient = WebClient();
+		LogDebug("Alma NCIP:WebClient Created");
+		LogDebug("Alma NCIP:Adding Header");
+		myWebClient.Headers:Add("Content-Type", "text/xml; charset=UTF-8");
+		LogDebug("Alma NCIP:Setting Upload String");
+		local LCIIresponseArray = myWebClient:UploadString(ncipAddress, LCIImessage);
+		LogDebug("Alma NCIP:Upload response was[" .. LCIIresponseArray .. "]");
+
+		LogDebug("Starting error catch")
+		local currentTN = GetFieldValue("Transaction", "TransactionNumber");
+		
+		if string.find(LCIIresponseArray, "Unknown Item") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckIn-Unknown Item"});
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, LCIIresponseArray});
+		SaveDataSource("Transaction");
+		
+		elseif string.find(LCIIresponseArray, "Item Not Checked Out") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckIn-Not Checked Out"});
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, LCIIresponseArray});
+		SaveDataSource("Transaction");	
+		
+		elseif string.find(LCIIresponseArray, "Problem") then
+		LogDebug("NCIP Error: ReRouting Transaction");
+		ExecuteCommand("Route", {currentTN, Settings.LendingCheckInItemFailQueue});
+		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
+		ExecuteCommand("AddNote", {currentTN, LCIIresponseArray});
+		SaveDataSource("Transaction");
+		
+		else
+		LogDebug("No Problems found in NCIP Response.")
+		ExecuteCommand("AddNote", {currentTN, "NCIP Response for LendingCheckInItem received successfully"});
+		SaveDataSource("Transaction");
+		end
+		
+		-- Wanding in item at Resource Sharing library updates item location.  NCIP checkin erroneously shows item as 'available' at the original holding library.
+		-- This step informs Alma that the item is still at Resource Sharing pending transit home.
+		WandIn(barcodes[i+1]);
+	end --end of barcode iterative loop
 end
 
+function GetHoldingData(barcode)
+-- Returns mms_id, holding_id, and pid via API using item barcode
+
+local itembarcode = barcode;
+local APIAddress = Settings.APIEndpoint ..'items?item_barcode=' .. itembarcode .. '&apikey=' .. Settings.APIKey
+LogDebug('Alma NCIP:Attempting to use API endpoint ' .. APIAddress);
+LogDebug('Alma NCIP:API holding lookup for barcode ' .. itembarcode);
+
+luanet.load_assembly("System");
+local APIWebClient = luanet.import_type("System.Net.WebClient");
+local streamreader = luanet.import_type("System.Net.IO.StreamReader");
+local ThisWebClient = APIWebClient();
+
+local APIResults = ThisWebClient:DownloadString(APIAddress);
+
+LogDebug("Alma NCIP:Holdings response was[" .. APIResults .. "]");
+	
+local mms_id = APIResults:match("<mms_id>(.-)</mms_id");
+local holding_id = APIResults:match("<holding_id>(.-)</holding_id>");
+local pid = APIResults:match("<pid>(.-)</pid>");
+local library = APIResults:match("<library desc=\"(.-)\"");
+local location = APIResults:match("<location desc=\"(.-)\"");
+
+local holdinglibrary = library .. " " .. location;
+
+LogDebug('Alma NCIP:Found mms_id ' .. mms_id .. ', holding_id ' .. holding_id .. ', pid ' .. pid .. ' for barcode ' .. itembarcode .. " at " .. holdinglibrary);
+return mms_id, holding_id, pid, holdinglibrary;
+end
+
+function WandIn(barcode)
+-- Wand-in at Resource Sharing Library after check-in (prevents erroneous "available" status)
+
+-- call function to retrieve mms_id, holding_id, and pid from barcode via API
+
+Sleep(4);
+local tn = GetFieldValue("Transaction", "TransactionNumber");
+local wandinbarcode = barcode
+local mmsid, holdingid, pid = GetHoldingData(wandinbarcode);
+
+local APIAddress = Settings.APIEndpoint .. 'bibs/' .. mmsid .. '/holdings/' .. holdingid .. '/items/' .. pid .. '?apikey=' .. Settings.APIKey .. '&user_id=' .. Settings.PseudopatronID .. '&op=SCAN&library=' ..  Settings.ResourceSharingLibraryCode .. '&circ_desk=' .. Settings.ResourceSharingCirculationDeskCode .. '&external_id=false&auto_print_slip=false&register_in_house_use=false';
+
+
+LogDebug('AlmaNCIP:Attempting to use API endpoint ' .. APIAddress);
+LogDebug('AlmaNCIP:API scan-in for barcode ' .. wandinbarcode);
+
+luanet.load_assembly("System");
+local APIWebClient = luanet.import_type("System.Net.WebClient");
+local streamreader = luanet.import_type("System.Net.IO.StreamReader");
+local ThisWebClient = APIWebClient();
+
+local APIResults = ThisWebClient:DownloadString(APIAddress);
+
+LogDebug("AlmaNCIP:Holdings response was[" .. APIResults .. "]");
+ExecuteCommand("AddNote", {tn, "API Scan-in for barcode ".. wandinbarcode .." performed at "..Settings.ResourceSharingLibraryCode ..":".. Settings.ResourceSharingCirculationDeskCode});
+
+end
+
+-- Alma NCIP and API calls are prone to timing out.
+function Sleep(s)
+  local ntime = os.time() + s
+  repeat until os.time() > ntime
+end
+	
+	
 --AcceptItem XML Builder for Borrowing
 --sometimes Author fields and Title fields are blank
 function buildAcceptItem(currentpiece,totalpieces)
+local bibsuffix = "";
 local tn = "";
 local dr = tostring(GetFieldValue("Transaction", "DueDate"));
 local df = string.match(dr, "%d+\/%d+\/%d+");
@@ -326,6 +479,20 @@ local title = GetFieldValue("Transaction", "LoanTitle");
 	if string.find(title, "&") ~= nil then
 		title = string.gsub(title, "&", "and");
 	end
+
+
+if (GetFieldValue("Transaction", "LibraryUseOnly") == true) then
+	bibsuffix = ' LIBRARY USE ONLY ';
+end
+
+if (GetFieldValue("Transaction", "RenewalsAllowed") ~= true) then
+	bibsuffix = bibsuffix .. ' NO RENEWALS ';
+end
+
+if (bibsuffix ~= "") then
+	bibsuffix = '[' .. bibsuffix .. '- due ' .. dr .. ']';
+	title = title .. bibsuffix;
+end
 	
 local pickup_location_full = GetFieldValue("Transaction", "NVTGC");
 local sublibraries = assert(io.open(AddonInfo.Directory .. "\\sublibraries.txt", "r"));
@@ -373,7 +540,7 @@ local m = '';
 	m = m .. '<ItemIdentifierValue>' .. tn .. '_' .. currentpiece .. 'of' .. totalpieces .. '</ItemIdentifierValue>'
 	m = m .. '</ItemId>'
 	m = m .. '<DateForReturn>' .. yr .. '-' .. mnt .. '-' .. dya .. 'T23:59:00' .. '</DateForReturn>'
-  m = m .. '<PickupLocation>' .. pickup_location .. '</PickupLocation>'
+	m = m .. '<PickupLocation>' .. pickup_location .. '</PickupLocation>'
 	m = m .. '<ItemOptionalFields>'
 	m = m .. '<BibliographicDescription>'
 	m = m .. '<Author>' .. author .. '</Author>'
@@ -438,18 +605,11 @@ local cib = '';
 end
 
 --ReturnedItem XML Builder for Lending (Library Returns)
-function buildCheckInItemLending()
+function buildCheckInItemLending(barcode)
 local ttype = "";
 local user = GetFieldValue("Transaction", "Username");
-local itemnumber = GetFieldValue("Transaction", "ItemNumber");
-local trantype = GetFieldValue("Transaction", "ProcessType");
-	if trantype == "Borrowing" then
-		ttype = Settings.checkInItem_Transaction_Prefix .. GetFieldValue("Transaction", "TransactionNumber");		
-	elseif trantype == "Lending" then
-		ttype = GetFieldValue("Transaction", "ItemNumber");
-	else
-		ttype = Settings.checkInItem_Transaction_Prefix .. GetFieldValue("Transaction", "TransactionNumber");
-	end
+local itembarcode = barcode;
+local tn = GetFieldValue("Transaction", "TransactionNumber");
 	
 local cil = '';
     cil = cil .. '<?xml version="1.0" encoding="ISO-8859-1"?>'
@@ -469,11 +629,11 @@ local cil = '';
 	cil = cil .. '</UserId>'
 	cil = cil .. '<ItemId>'
 	cil = cil .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
-	cil = cil .. '<ItemIdentifierValue>' .. itemnumber .. '</ItemIdentifierValue>'
+	cil = cil .. '<ItemIdentifierValue>' .. itembarcode .. '</ItemIdentifierValue>'
 	cil = cil .. '</ItemId>'
 	cil = cil .. '<RequestId>'
 	cil = cil .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
-	cil = cil .. '<RequestIdentifierValue>' .. ttype .. '</RequestIdentifierValue>'
+	cil = cil .. '<RequestIdentifierValue>' .. tn .. '</RequestIdentifierValue>'
 	cil = cil .. '</RequestId>'
 	cil = cil .. '</CheckInItem>'
 	cil = cil .. '</NCIPMessage>'
@@ -481,22 +641,22 @@ local cil = '';
 end
 
 --CheckOutItem XML Builder for Lending
-function buildCheckOutItem()
+function buildCheckOutItem(barcode)
 local dr = tostring(GetFieldValue("Transaction", "DueDate"));
 local df = string.match(dr, "%d+\/%d+\/%d+");
 local mn, dy, yr = string.match(df, "(%d+)/(%d+)/(%d+)");
 local mnt = string.format("%02d",mn);
 local dya = string.format("%02d",dy);
 local pseudopatron = 'pseudopatron';
-local itemnumber = GetFieldValue("Transaction", "ItemNumber");
+local itembarcode = barcode;
 local tn = Settings.checkOutItem_RequestIdentifierValue_Prefix .. GetFieldValue("Transaction", "TransactionNumber");
 local coi = '';
-    coi = coi .. '<?xml version="1.0" encoding="ISO-8859-1"?>'
+    --coi = coi .. '<?xml version="1.0" encoding="ISO-8859-1"?>'
 	coi = coi .. '<NCIPMessage xmlns="http://www.niso.org/2008/ncip" version="http://www.niso.org/schemas/ncip/v2_02/ncip_v2_02.xsd">'
 	coi = coi .. '<CheckOutItem>'
 	coi = coi .. '<InitiationHeader>'
 	coi = coi .. '<FromAgencyId>' 
-	coi = coi .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
+	coi = coi .. '<AgencyId>' .. Settings.ILLiad_NCIP_Agency_value .. '</AgencyId>'
 	coi = coi .. '</FromAgencyId>'
 	coi = coi .. '<ToAgencyId>' 
 	coi = coi .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
@@ -508,24 +668,37 @@ local coi = '';
 	coi = coi .. '</UserId>'
 	coi = coi .. '<ItemId>'
 	coi = coi .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
-	coi = coi .. '<ItemIdentifierValue>' .. itemnumber .. '</ItemIdentifierValue>'
+	coi = coi .. '<ItemIdentifierValue>' .. itembarcode .. '</ItemIdentifierValue>'
 	coi = coi .. '</ItemId>'
 	coi = coi .. '<RequestId>'
 	coi = coi .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
 	coi = coi .. '<RequestIdentifierValue>' .. tn .. '</RequestIdentifierValue>'
 	coi = coi .. '</RequestId>'
-	coi = coi .. '<DesiredDateDue>' .. yr .. '-' .. mnt .. '-' .. dya .. 'T23:59:00' .. '</DesiredDateDue>'
+	--coi = coi .. '<DesiredDateDue>' .. yr .. '-' .. mnt .. '-' .. dya .. 'T23:59:00' .. '</DesiredDateDue>'
 	coi = coi .. '</CheckOutItem>'
 	coi = coi .. '</NCIPMessage>'
 	return coi;
 	
 end
 
---A simple function to get the number of pieces in a borrowing request for iterative AcceptItem and CheckIn
+--A simple function to get the number of pieces in a transaction for iterative actions
 function CountPieces()
 local pieces = GetFieldValue("Transaction","Pieces");
 if ((pieces == '' ) or (pieces == nil)) then
 	pieces = 1;
 	end
 return pieces;
+end
+
+-- A simple function that takes delimited string and returns an array of delimited values
+function Parse(inputstr, delim)
+delim = delim or '/';
+local t={};
+
+	for field,s in string.gmatch(inputstr, "([^"..delim.."]*)("..delim.."?)") do 
+			table.insert(t,field)
+			if s=="" then return t
+			end
+	end
+
 end

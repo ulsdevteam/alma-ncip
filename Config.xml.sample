@@ -1,25 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Name>ALMA_NCIP_Client</Name>
-  <Author>Tom McNulty, VCU Libraries</Author>
-  <Version>3.0</Version>
-  <Active>False</Active>
+  <Author>Jason Thorhauer, University of Pittsburgh - based on work by Tom McNulty, VCU Libraries</Author>
+  <Version>5.0</Version>
+  <Active>True</Active>
   <Type>System</Type>
   <Description>This system level addon allows for ILLiad to communicate with Alma via NCIP protocol.</Description>
   <Forms />
   <Permissions />
   <Settings>
-	<Setting name="DebugMode" value="true" type="boolean">
-		<Description>Toggles whether this addon functions in the sandbox or production environment.</Description>
-	</Setting>
+    <Setting name="DebugMode" value="true" type="boolean">
+      <Description>Toggles whether this addon functions in the sandbox or production environment.</Description>
+    </Setting>
+	<Setting name="ResourceSharingLibraryCode" value="RES_SHARE" type="string">
+      <Description>Alma code for your resource sharing library.</Description>
+    </Setting>
+	<Setting name="ResourceSharingCirculationDeskCode" value="RS_CIRC" type="string">
+      <Description>Alma code for your resource sharing library circulation desk.</Description>
+    </Setting>
     <Setting name="Production_NCIP_Responder_URL" value="https://na04.alma.exlibrisgroup.com/view/NCIPServlet" type="string">
       <Description>This setting value is the address for the Production NCIP Responder URL.</Description>
     </Setting>
-	<Setting name="Sandbox_NCIP_Responder_URL" value="https://pitt-psb.alma.exlibrisgroup.com/view/NCIPServlet" type="string">
-	<Description>This setting value is the address for the Sandbox NCIP Responder URL.</Description>
-	</Setting>
+    <Setting name="Sandbox_NCIP_Responder_URL" value="https://na04-psb.alma.exlibrisgroup.com/view/NCIPServlet" type="string">
+      <Description>This setting value is the address for the Sandbox NCIP Responder URL.</Description>
+    </Setting>
+	<Setting name="APIEndpoint" value="https://api-na.hosted.exlibrisgroup.com/almaws/v1" type="string">
+      <Description>Alma API endpoint address.</Description>
+    </Setting>
+    <Setting name="ProductionAPIKey" value="08xx2200a008ced2324cad4e00d22b8ab29a" type="string">
+      <Description>The Production API key (must have Alma permissions for "Bibs - Production Read/write", "Users - Production Read/write")</Description>
+    </Setting>
+    <Setting name="SandboxAPIKey" value="08xxbed7b7a0d9531d6b83be3f0298db4bb8" type="string">
+      <Description>The Sandbox API key (must have Alma permissions for "Bibs - Sandbox Read/write", "Users - Sandbox Read/write")</Description>
+    </Setting>
+	 <Setting name="PseudopatronID" value="2x00n00000000000" type="string">
+      <Description>Primary ID of pseudopatron used to place patron physical item requests.</Description>
+    </Setting>
     <Setting name="acceptItem_from_uniqueAgency_value" value="01XXX_INST" type="string">
       <Description>This is your institutional Alma Code.</Description>
+    </Setting>
+	<Setting name="ILLiad_NCIP_Agency_value" value="XYZ" type="string">
+      <Description>ILLiad Agency ID.</Description>
     </Setting>
     <Setting name="ApplicationProfileType" value="XXX" type="string">
       <Description>Input the Resource Sharing Partner code used in Alma.</Description>
