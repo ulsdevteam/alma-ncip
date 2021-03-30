@@ -1,4 +1,4 @@
---About ALMA_NCIP_Client 5.0
+--About ALMA_NCIP_Client 7.0
 --
 --To be used with ULS-updated PrimoVE.lua addon, with delimited Alma barcodes and request IDs stored in ItemInfo1 and ItemInfo2 fields.
 --Lending CheckOut (triggered by In Stacks Searching 'Mark Found' cancels pending Patron Physical Item Requests via API and checks out the item via NCIP.
@@ -36,10 +36,10 @@
 
 
 local Settings = {};
-DebugMode = GetSetting("DebugMode");
+Settings.DebugMode = GetSetting("DebugMode");
 
 --NCIP Responder URL
-if (DebugMode==true) then
+if (Settings.DebugMode == true) then
 	LogDebug("Alma NCIP: Debug mode is on - NCIP and API requests will act on the sandbox");
 	Settings.NCIP_Responder_URL = GetSetting("Sandbox_NCIP_Responder_URL");
 	Settings.APIKey = GetSetting("SandboxAPIKey");
@@ -97,11 +97,18 @@ function BorrowingAcceptItem(transactionProcessedEventArgs)
 	LogDebug("BorrowingAcceptItem - start");
 	
 	if GetFieldValue("Transaction", "RequestType") == "Loan" then
-	
 		local pieces = CountPieces();
+		local currentTN = GetFieldValue("Transaction", "TransactionNumber");
+		
+		if (pieces == 1) then
+			SetFieldValue("Transaction","ItemInfo1",currentTN..'-1OF1');
+		else
+			SetFieldValue("Transaction","ItemInfo1",currentTN..'-XOF'..pieces);
+		end
+		
 		LogDebug("Alma NCIP:Item Request has been identified as a Loan and not Article - process started with " .. pieces .. " pieces.");
 		
-		for i=0,pieces do
+		for i=0,pieces-1 do
 			luanet.load_assembly("System");
 			local ncipAddress = Settings.NCIP_Responder_URL;
 			local BAImessage = buildAcceptItem(i+1,pieces);
@@ -162,7 +169,7 @@ function BorrowingCheckInItem(transactionProcessedEventArgs)
 	local pieces = CountPieces();
 	LogDebug("Alma NCIP:BorrowingCheckInItem - start for " .. pieces .. " pieces.");
 	
-	for i=0,pieces do
+	for i=0,pieces-1 do
 		luanet.load_assembly("System");
 		local ncipAddress = Settings.NCIP_Responder_URL;
 		local BCIImessage = buildCheckInItemBorrowing(i+1,pieces);
@@ -180,11 +187,26 @@ function BorrowingCheckInItem(transactionProcessedEventArgs)
 		local currentTN = GetFieldValue("Transaction", "TransactionNumber");
 		
 		if string.find(BCIIresponseArray, "Unknown Item") then
-		LogDebug("NCIP Error: ReRouting Transaction");
-		ExecuteCommand("Route", {currentTN, "NCIP Error: BorCheckIn-UnknownItem"});
-		LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
-		ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
-		SaveDataSource("Transaction");
+			LogDebug("NCIP checkin failed: Unknown Item: [" .. BCIIresponseArray .. "]");
+			
+			---------LEGACY NCIP checkins will not have the same barcode format, so retry checkin with just TN as barcode ------------------
+			local Legacymessage = buildLegacyCheckInItemBorrowing(currentTN);
+			local BCIIresponseArray = myWebClient:UploadString(ncipAddress, Legacymessage);
+				if string.find(BCIIresponseArray, "Unknown Item") then
+					LogDebug("NCIP checkin failed on retry for legacy barcode as well: [" .. BCIIresponseArray .. "]");
+					LogDebug("NCIP Error: ReRouting Transaction");
+					ExecuteCommand("Route", {currentTN, "NCIP Error: BorCheckIn-UnknownItem"});
+					LogDebug("Alma NCIP:Adding Note to Transaction with NCIP Client Error");
+					ExecuteCommand("AddNote", {currentTN, BCIIresponseArray});
+					SaveDataSource("Transaction");
+				else
+					LogDebug("No Problems found in NCIP retry with legacy barcode.")
+					ExecuteCommand("AddNote", {currentTN, "NCIP Response for BorrowingCheckInItem (legacy) received successfully"});
+					SaveDataSource("Transaction");
+				end
+
+			-----------------------------------------------------------------------------------------------------------------------------------------
+		
 		
 		elseif string.find(BCIIresponseArray, "Item Not Checked Out") then
 		LogDebug("NCIP Error: ReRouting Transaction");
@@ -215,7 +237,8 @@ function CancelPendingRequests(request)
 
 local requestID = request;
 local tn = GetFieldValue("Transaction", "TransactionNumber");
-local APIAddress = Settings.APIEndpoint .. 'users/' .. Settings.PseudopatronID .. '/requests/' .. requestID .. '?apikey=' .. Settings.APIKey
+local APIAddress = Settings.APIEndpoint .. 'users/' .. Settings.PseudopatronID .. '/requests/' .. requestID .. '?apikey=' .. Settings.APIKey .. '&notify_user=false&reason=RequestSwitched';
+
 
 LogDebug('AlmaNCIP:Attempting to use API Endpoint '.. APIAddress);
 luanet.load_assembly("System");
@@ -225,10 +248,16 @@ LogDebug("Alma NCIP:WebClient Created");
 LogDebug("Alma NCIP:Adding Header");
 		
 APICancelWebClient.Headers:Add("Content-Type", "application/xml;charset=UTF-8");
-local APICancelresponseArray = APICancelWebClient:UploadString(APIAddress, "DELETE", "");
-LogDebug("AlmaNCIP: API Request Cancel response was[" .. APICancelresponseArray .. "]");
-ExecuteCommand("AddNote", {tn, 'Patron Physical Item Request ' .. requestID .. ' cancelled via API', 'System'});
-Sleep(3);
+local APICancelresponseArray = "";
+
+if pcall(function () APICancelresponseArray = APICancelWebClient:UploadString(APIAddress, "DELETE", ""); end) then
+	LogDebug("AlmaNCIP: API Request Cancel response was[" .. APICancelresponseArray .. "]");
+	ExecuteCommand("AddNote", {tn, 'Patron Physical Item Request ' .. requestID .. ' cancelled via API', 'System'});
+else
+	LogDebug("AlmaNCIP: API failure - unable to cancel request # " .. requestID);
+	ExecuteCommand("AddNote", {tn, 'API Failure: unable to cancel Alma Patron Physical Item Request ' .. requestID, 'System'});
+end
+
 end
 
 function LendingCheckOutItem(transactionProcessedEventArgs)
@@ -239,8 +268,14 @@ function LendingCheckOutItem(transactionProcessedEventArgs)
 	local barcodes = {};
 	
 	local requestdatafield = GetFieldValue("Transaction","ItemInfo2");
-	local barcodedatafield = GetFieldValue("Transaction","ItemInfo1");
 	
+	if (GetFieldValue("Transaction","ItemInfo1")) == '' then
+		LogDebug("AlmaNCIP: ItemInfo1 field blank - using legacy ItemNumber field for checkout");
+		SetFieldValue("Transaction","ItemInfo1",GetFieldValue("Transaction","ItemNumber"));
+	end
+	
+	local barcodedatafield = GetFieldValue("Transaction","ItemInfo1");
+		
 	local requests = Parse(requestdatafield,'/');
 	local barcodes = Parse(barcodedatafield,'/');
 	
@@ -271,6 +306,7 @@ function LendingCheckOutItem(transactionProcessedEventArgs)
 		LogDebug("Starting error catch")
 		local currentTN = GetFieldValue("Transaction", "TransactionNumber");
 		
+
 		if string.find(LCOIresponseArray, "Apply to circulation desk - Loan cannot be renewed (no change in due date)") then
 		LogDebug("NCIP Error: ReRouting Transaction");
 		ExecuteCommand("Route", {currentTN, "NCIP Error: LCheckOut-No Change Due Date"});
@@ -305,8 +341,6 @@ function LendingCheckOutItem(transactionProcessedEventArgs)
 		SaveDataSource("Transaction");
 		end
 		
-		--Alma NCIP frequently times out, especially in the Sandbox.  Care must be taken to avoid sending requests too quickly.
-		Sleep(3);
 	end --end of barcodes iteration
 end
 
@@ -317,7 +351,13 @@ function LendingCheckInItem(transactionProcessedEventArgs)
 	local requests = {};
 	local barcodes = {};
 	
+	if (GetFieldValue("Transaction","ItemInfo1")) == '' then
+		LogDebug("AlmaNCIP: ItemInfo1 field blank - using legacy ItemNumber field for checkin");
+		SetFieldValue("Transaction","ItemInfo1",GetFieldValue("Transaction","ItemNumber"));
+	end
+	
 	local barcodedatafield = GetFieldValue("Transaction","ItemInfo1");
+		
 	local barcodes = Parse(barcodedatafield,'/');
 
 	for i=0,(#barcodes)-1 do
@@ -368,6 +408,7 @@ function LendingCheckInItem(transactionProcessedEventArgs)
 		
 		-- Wanding in item at Resource Sharing library updates item location.  NCIP checkin erroneously shows item as 'available' at the original holding library.
 		-- This step informs Alma that the item is still at Resource Sharing pending transit home.
+		
 		WandIn(barcodes[i+1]);
 	end --end of barcode iterative loop
 end
@@ -394,11 +435,16 @@ local holding_id = APIResults:match("<holding_id>(.-)</holding_id>");
 local pid = APIResults:match("<pid>(.-)</pid>");
 local library = APIResults:match("<library desc=\"(.-)\"");
 local location = APIResults:match("<location desc=\"(.-)\"");
+local availability = APIResults:match("<base_status desc=\"(.-)\"");
+-- if item is not in place then Alma lists a process type for that item
+if (availability ~= "Item in place") then
+	availability = APIResults:match("<process_type desc=\"(.-)\"");
+end
 
 local holdinglibrary = library .. " " .. location;
 
-LogDebug('Alma NCIP:Found mms_id ' .. mms_id .. ', holding_id ' .. holding_id .. ', pid ' .. pid .. ' for barcode ' .. itembarcode .. " at " .. holdinglibrary);
-return mms_id, holding_id, pid, holdinglibrary;
+LogDebug('Alma NCIP:Found mms_id ' .. mms_id .. ', holding_id ' .. holding_id .. ', pid ' .. pid .. ' for barcode ' .. itembarcode .. " at " .. holdinglibrary .. ". Status: " .. availability);
+return mms_id, holding_id, pid, holdinglibrary, availability;
 end
 
 function WandIn(barcode)
@@ -406,12 +452,30 @@ function WandIn(barcode)
 
 -- call function to retrieve mms_id, holding_id, and pid from barcode via API
 
-Sleep(4);
 local tn = GetFieldValue("Transaction", "TransactionNumber");
-local wandinbarcode = barcode
-local mmsid, holdingid, pid = GetHoldingData(wandinbarcode);
+local wandinbarcode = barcode;
+local waitcounter = 0;
+local availability = "";
+local mmsid = "";
+local holdingid = "";
+local pid = "";
+local holdinglibrary = "";
 
-local APIAddress = Settings.APIEndpoint .. 'bibs/' .. mmsid .. '/holdings/' .. holdingid .. '/items/' .. pid .. '?apikey=' .. Settings.APIKey .. '&user_id=' .. Settings.PseudopatronID .. '&op=SCAN&library=' ..  Settings.ResourceSharingLibraryCode .. '&circ_desk=' .. Settings.ResourceSharingCirculationDeskCode .. '&external_id=false&auto_print_slip=false&register_in_house_use=false';
+mmsid, holdingid, pid, holdinglibrary,availability = GetHoldingData(wandinbarcode);
+
+if (availability == "Transit") then
+	LogDebug("AlmaNCIP: Skipping wandin as item is in transit (likely as a result of pending Restore job)");
+	ExecuteCommand("AddNote", {tn, "Skipping wandin as item is in transit (likely as a result of pending Restore job)"});
+	return;
+end
+
+while (availability ~= "Item in place" and waitcounter < 10) do
+	Sleep(2);
+	waitcounter = waitcounter + 1;
+	mmsid, holdingid, pid, holdinglibrary,availability = GetHoldingData(wandinbarcode);
+end
+			
+local APIAddress = Settings.APIEndpoint .. 'bibs/' .. mmsid .. '/holdings/' .. holdingid .. '/items/' .. pid .. '?apikey=' .. Settings.APIKey .. '&user_id=' .. Settings.PseudopatronID .. '&op=SCAN&library=' ..  Settings.ResourceSharingLibraryCode .. '&circ_desk=' .. Settings.ResourceSharingCirculationDeskCode .. '&register_in_house_use=false&confirm=true';
 
 
 LogDebug('AlmaNCIP:Attempting to use API endpoint ' .. APIAddress);
@@ -422,10 +486,17 @@ local APIWebClient = luanet.import_type("System.Net.WebClient");
 local streamreader = luanet.import_type("System.Net.IO.StreamReader");
 local ThisWebClient = APIWebClient();
 
-local APIResults = ThisWebClient:DownloadString(APIAddress);
+ThisWebClient.Headers:Add("Content-Type","application/xml;charset=UTF-8");
 
-LogDebug("AlmaNCIP:Holdings response was[" .. APIResults .. "]");
-ExecuteCommand("AddNote", {tn, "API Scan-in for barcode ".. wandinbarcode .." performed at "..Settings.ResourceSharingLibraryCode ..":".. Settings.ResourceSharingCirculationDeskCode});
+local APIResults = "";
+
+if pcall(function () APIResults = ThisWebClient:UploadString(APIAddress,''); end) then
+	LogDebug("AlmaNCIP:WandIn response was[" .. APIResults .. "]");
+	ExecuteCommand("AddNote", {tn, "API Scan-in for barcode ".. wandinbarcode .." performed at "..Settings.ResourceSharingLibraryCode ..":".. Settings.ResourceSharingCirculationDeskCode});
+else
+	LogDebug("AlmaNCIP:WandIn failed for barcode " .. wandinbarcode);
+	ExecuteCommand("AddNote", {tn, "API Failure: Scan-in for barcode ".. wandinbarcode .." at "..Settings.ResourceSharingLibraryCode ..":".. Settings.ResourceSharingCirculationDeskCode .. " was not successful."});
+end
 
 end
 
@@ -490,7 +561,7 @@ if (GetFieldValue("Transaction", "RenewalsAllowed") ~= true) then
 end
 
 if (bibsuffix ~= "") then
-	bibsuffix = '[' .. bibsuffix .. '- due ' .. dr .. ']';
+	bibsuffix = '[' .. bibsuffix .. '- due ' .. mnt .. '/' .. dya .. '/' .. yr .. ']';
 	title = title .. bibsuffix;
 end
 	
@@ -537,7 +608,7 @@ local m = '';
 	m = m .. '<UserIdentifierValue>' .. user .. '</UserIdentifierValue>'
 	m = m .. '</UserId>'
 	m = m .. '<ItemId>'
-	m = m .. '<ItemIdentifierValue>' .. tn .. '_' .. currentpiece .. 'of' .. totalpieces .. '</ItemIdentifierValue>'
+	m = m .. '<ItemIdentifierValue>' .. tn .. '-' .. currentpiece .. 'OF' .. totalpieces .. '</ItemIdentifierValue>'
 	m = m .. '</ItemId>'
 	m = m .. '<DateForReturn>' .. yr .. '-' .. mnt .. '-' .. dya .. 'T23:59:00' .. '</DateForReturn>'
 	m = m .. '<PickupLocation>' .. pickup_location .. '</PickupLocation>'
@@ -593,7 +664,7 @@ local cib = '';
 	cib = cib .. '</UserId>'
 	cib = cib .. '<ItemId>'
 	cib = cib .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
-	cib = cib .. '<ItemIdentifierValue>' .. tn .. '_' .. currentpiece .. 'of' .. totalpieces .. '</ItemIdentifierValue>'
+	cib = cib .. '<ItemIdentifierValue>' .. tn .. '-' .. currentpiece .. 'OF' .. totalpieces .. '</ItemIdentifierValue>'
 	cib = cib .. '</ItemId>'
 	cib = cib .. '<RequestId>'
 	cib = cib .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
@@ -674,7 +745,6 @@ local coi = '';
 	coi = coi .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
 	coi = coi .. '<RequestIdentifierValue>' .. tn .. '</RequestIdentifierValue>'
 	coi = coi .. '</RequestId>'
-	--coi = coi .. '<DesiredDateDue>' .. yr .. '-' .. mnt .. '-' .. dya .. 'T23:59:00' .. '</DesiredDateDue>'
 	coi = coi .. '</CheckOutItem>'
 	coi = coi .. '</NCIPMessage>'
 	return coi;
@@ -685,20 +755,57 @@ end
 function CountPieces()
 local pieces = GetFieldValue("Transaction","Pieces");
 if ((pieces == '' ) or (pieces == nil)) then
-	pieces = 1;
+	pieces = 0;
 	end
 return pieces;
 end
 
 -- A simple function that takes delimited string and returns an array of delimited values
 function Parse(inputstr, delim)
+if (inputstr == "") then return "";
+else
 delim = delim or '/';
-local t={};
+local result = {};
+local match = '';
 
-	for field,s in string.gmatch(inputstr, "([^"..delim.."]*)("..delim.."?)") do 
-			table.insert(t,field)
-			if s=="" then return t
-			end
-	end
+for match in (inputstr..delim):gmatch("(.-)"..delim) do
+	table.insert(result,match);
+end
+	return result;
+end
 
+end
+
+--ReturnedItem XML Builder for Legacy Borrowing (Patron Returns)
+--Allows failed NCIP checkins to be retried using barcode specified by legacy IDS addons
+function buildLegacyCheckInItemBorrowing(currentTN)
+local user = GetFieldValue("User", "SSN");
+	
+local cib = '';
+    cib = cib .. '<?xml version="1.0" encoding="ISO-8859-1"?>'
+	cib = cib .. '<NCIPMessage xmlns="http://www.niso.org/2008/ncip" version="http://www.niso.org/schemas/ncip/v2_02/ncip_v2_02.xsd">'
+	cib = cib .. '<CheckInItem>'
+	cib = cib .. '<InitiationHeader>'
+	cib = cib .. '<FromAgencyId>'
+	cib = cib .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
+	cib = cib .. '</FromAgencyId>'
+	cib = cib .. '<ToAgencyId>'
+	cib = cib .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
+	cib = cib .. '</ToAgencyId>'
+	cib = cib .. '<ApplicationProfileType>' .. Settings.ApplicationProfileType .. '</ApplicationProfileType>'
+	cib = cib .. '</InitiationHeader>'
+	cib = cib .. '<UserId>'
+	cib = cib .. '<UserIdentifierValue>' .. user .. '</UserIdentifierValue>'
+	cib = cib .. '</UserId>'
+	cib = cib .. '<ItemId>'
+	cib = cib .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
+	cib = cib .. '<ItemIdentifierValue>' .. currentTN .. '</ItemIdentifierValue>'
+	cib = cib .. '</ItemId>'
+	cib = cib .. '<RequestId>'
+	cib = cib .. '<AgencyId>' .. Settings.acceptItem_from_uniqueAgency_value .. '</AgencyId>'
+	cib = cib .. '<RequestIdentifierValue>' .. currentTN .. '</RequestIdentifierValue>'
+	cib = cib .. '</RequestId>'
+	cib = cib .. '</CheckInItem>'
+	cib = cib .. '</NCIPMessage>'
+	return cib;
 end
